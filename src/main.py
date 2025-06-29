@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from robot_env import TwoLinkArm, RobotVisualizer
-from ddp import DDP
+from ddp import iLQRSolver # Updated import from DDP to iLQRSolver
 
 # === Configuration Constants ===
 # --- Robot Arm Parameters ---
@@ -189,33 +189,33 @@ def main():
                        arm_cost_function(arm, state_x, control_u, k_step, is_final, compute_derivs)
 
 
-    # --- 4. Initialize DDP (iLQR) Solver ---
-    ddp_solver = DDP(dynamics_fn=dynamics_fn_for_ddp,
-                     cost_fn=cost_fn_for_ddp,
-                     state_dim=arm.state_dim,
-                     control_dim=arm.control_dim,
-                     horizon=HORIZON)
+    # --- 4. Initialize iLQR Solver --- # Changed DDP to iLQR
+    ilqr_solver = iLQRSolver(dynamics_fn=dynamics_fn_for_ddp, # Changed DDP to iLQRSolver
+                             cost_fn=cost_fn_for_ddp,
+                             state_dim=arm.state_dim,
+                             control_dim=arm.control_dim,
+                             horizon=HORIZON)
 
-    # --- 5. Initial Control Guess for DDP ---
+    # --- 5. Initial Control Guess for iLQR --- # Changed DDP to iLQR
     # A common starting point is zero controls.
     # Small random controls can sometimes help break symmetries or explore if zero gets stuck.
     # U_initial_guess = np.zeros((HORIZON, arm.control_dim))
     U_initial_guess = np.random.randn(HORIZON, arm.control_dim) * 0.001 # Small random accelerations
 
 
-    # --- 6. Run DDP Optimization ---
-    print("Running DDP optimization for the 2-Link Arm...")
+    # --- 6. Run iLQR Optimization --- # Changed DDP to iLQR
+    print("Running iLQR optimization for the 2-Link Arm...") # Changed DDP to iLQR
     # Note: max_iters might need adjustment based on problem complexity and desired convergence.
-    # Numerical differentiation for dynamics (default in this DDP impl) can be slow.
+    # Numerical differentiation for dynamics (default in this iLQR impl) can be slow.
     # Analytical dynamics derivatives (fx, fu) would significantly speed this up.
-    X_opt, U_opt, final_cost, cost_history = ddp_solver.run(
+    X_opt, U_opt, final_cost, cost_history = ilqr_solver.run( # Changed ddp_solver to ilqr_solver
         initial_state,
         U_initial_guess,
         max_iters=25, # Adjusted for potentially faster run in this environment
         tol=1e-4
     )
 
-    print("\n--- DDP Optimization Results ---")
+    print("\n--- iLQR Optimization Results ---") # Changed DDP to iLQR
     print(f"Final Optimized Cost: {final_cost:.4f}")
     print(f"Initial state: {X_opt[0]}")
     print(f"Final state (angles, omegas): {X_opt[-1]}")
@@ -247,13 +247,13 @@ def main():
     # Plot 1: Cost history
     fig_cost, ax_cost = plt.subplots()
     ax_cost.plot(cost_history)
-    ax_cost.set_xlabel('DDP Iteration')
+    ax_cost.set_xlabel('iLQR Iteration') # Changed DDP to iLQR
     ax_cost.set_ylabel('Total Cost')
-    ax_cost.set_title('Cost Function Evolution over DDP Iterations')
+    ax_cost.set_title('Cost Function Evolution over iLQR Iterations') # Changed DDP to iLQR
     ax_cost.grid(True)
     if plt.get_backend() == 'agg': # pragma: no cover
-        fig_cost.savefig("ddp_cost_history.png")
-        print("Cost history plot saved to ddp_cost_history.png")
+        fig_cost.savefig("ilqr_cost_history.png") # Changed DDP to iLQR
+        print("Cost history plot saved to ilqr_cost_history.png")
 
 
     # Plot 2: Control inputs
@@ -265,10 +265,10 @@ def main():
         axs_ctrl[i].set_ylabel(f'Control u{i+1} (accel)')
         axs_ctrl[i].grid(True)
     axs_ctrl[-1].set_xlabel('Time (s)')
-    fig_ctrl.suptitle('Optimized Control Inputs (Joint Accelerations)')
+    fig_ctrl.suptitle('iLQR Optimized Control Inputs (Joint Accelerations)') # Changed
     if plt.get_backend() == 'agg': # pragma: no cover
-        fig_ctrl.savefig("ddp_optimized_controls.png")
-        print("Optimized controls plot saved to ddp_optimized_controls.png")
+        fig_ctrl.savefig("ilqr_optimized_controls.png") # Changed
+        print("Optimized controls plot saved to ilqr_optimized_controls.png")
 
     # Plot 3: State trajectory (angles and velocities)
     time_x = np.arange(HORIZON + 1) * DT
@@ -286,40 +286,40 @@ def main():
     axs_state[1].set_xlabel('Time (s)')
     axs_state[1].legend()
     axs_state[1].grid(True)
-    fig_state.suptitle('Optimized State Trajectory')
+    fig_state.suptitle('iLQR Optimized State Trajectory') # Changed
     if plt.get_backend() == 'agg': # pragma: no cover
-        fig_state.savefig("ddp_optimized_states.png")
-        print("Optimized states plot saved to ddp_optimized_states.png")
+        fig_state.savefig("ilqr_optimized_states.png") # Changed
+        print("Optimized states plot saved to ilqr_optimized_states.png")
 
-    # Plot 4: End-effector path (DDP vs Naive)
-    ee_path_ddp = np.array([arm.forward_kinematics(X_opt[i, :2])[2] for i in range(HORIZON + 1)])
+    # Plot 4: End-effector path (iLQR vs Naive) # Changed
+    ee_path_ilqr = np.array([arm.forward_kinematics(X_opt[i, :2])[2] for i in range(HORIZON + 1)]) # Renamed ddp to ilqr
 
     # --- Generate and Plot Naive Trajectory for Comparison ---
     # Define a target joint angle configuration for the naive trajectory.
     # This is a heuristic guess; a proper Inverse Kinematics (IK) solver
     # would be better for finding angles that precisely match TARGET_EE_POS.
-    # The current target aims for an EE position somewhat near the DDP target for visual comparison.
+    # The current target aims for an EE position somewhat near the iLQR target for visual comparison. # Changed DDP to iLQR
     TARGET_ANGLES_NAIVE_DEG = [25, 20] # Example: [theta1_deg, theta2_deg]
     target_angles_naive_rad = np.deg2rad(TARGET_ANGLES_NAIVE_DEG)
 
     X_naive, U_naive, cost_naive = generate_naive_trajectory(
         arm, initial_state, target_angles_naive_rad,
-        HORIZON, DT, cost_fn_for_ddp # Pass the DDP cost function for fair comparison
+        HORIZON, DT, cost_fn_for_ddp # Pass the iLQR cost function for fair comparison
     )
     ee_path_naive = np.array([arm.forward_kinematics(X_naive[i, :2])[2] for i in range(HORIZON + 1)])
 
     print(f"\n--- Cost Comparison ---")
-    print(f"DDP Optimized Trajectory Cost: {final_cost:.2f}")
+    print(f"iLQR Optimized Trajectory Cost: {final_cost:.2f}") # Changed DDP to iLQR
     print(f"Naive Trajectory Cost: {cost_naive:.2f}")
 
 
     # Update End-Effector Path plot to include naive trajectory
     fig_path, ax_path = plt.subplots(figsize=(8,8)) # Slightly larger for better legend display
-    ax_path.plot(ee_path_ddp[:, 0], ee_path_ddp[:, 1], 'b-', lw=2.5, label=f'DDP Path (Cost: {final_cost:.2f})')
+    ax_path.plot(ee_path_ilqr[:, 0], ee_path_ilqr[:, 1], 'b-', lw=2.5, label=f'iLQR Path (Cost: {final_cost:.2f})')
     ax_path.plot(ee_path_naive[:, 0], ee_path_naive[:, 1], 'm--', lw=2, label=f'Naive Path (Cost: {cost_naive:.2f})')
 
     # Mark start and target points
-    ax_path.plot(ee_path_ddp[0, 0], ee_path_ddp[0, 1], 'go', ms=10, label='Start EE') # Green circle
+    ax_path.plot(ee_path_ilqr[0, 0], ee_path_ilqr[0, 1], 'go', ms=10, label='Start EE') # Changed ee_path_ddp to ee_path_ilqr
     ax_path.plot(TARGET_EE_POS[0], TARGET_EE_POS[1], 'rx', ms=10, mew=2, label='Target EE') # Red 'x'
     ax_path.set_xlabel('X Position (m)')
     ax_path.set_ylabel('Y Position (m)')
@@ -328,8 +328,8 @@ def main():
     ax_path.axis('equal')
     ax_path.grid(True)
     if plt.get_backend() == 'agg': # pragma: no cover
-        fig_path.savefig("ddp_ee_path.png")
-        print("End-effector path plot saved to ddp_ee_path.png")
+        fig_path.savefig("ilqr_ee_path.png") # Changed
+        print("End-effector path plot saved to ilqr_ee_path.png")
 
 
     if plt.get_backend() != 'agg': # pragma: no cover
@@ -339,11 +339,11 @@ def main():
         print("Running in 'agg' backend. Animation will not be shown directly. Plots saved to files.")
         # Ensure robot animation figure is also saved if not shown
         try:
-            robot_animation_fig.savefig("ddp_robot_animation_final_frame.png")
-            print("Robot animation final frame saved to ddp_robot_animation_final_frame.png")
+            robot_animation_fig.savefig("ilqr_robot_animation_final_frame.png") # Changed
+            print("Robot animation final frame saved to ilqr_robot_animation_final_frame.png")
             # Saving full animation as GIF needs FuncAnimation object and writer
-            # animation.save('arm_ddp_trajectory.gif', writer='imagemagick', fps=1.0/DT)
-            # print("Animation saved to arm_ddp_trajectory.gif")
+            # animation.save('arm_ilqr_trajectory.gif', writer='imagemagick', fps=1.0/DT) # Changed
+            # print("Animation saved to arm_ilqr_trajectory.gif")
         except Exception as e:
             print(f"Could not save robot animation figure/gif: {e}")
 
@@ -351,7 +351,7 @@ def main():
     print("Main script finished.")
 
 
-def generate_naive_trajectory(arm, initial_state_arm, target_angles_naive_rad, horizon, dt, cost_fn_with_arm):
+def generate_naive_trajectory(arm, initial_state_arm, target_angles_naive_rad, horizon, dt, cost_fn_for_comparison):
     """
     Generates a 'naive' trajectory for comparison with the DDP optimized one.
     This trajectory is created by:

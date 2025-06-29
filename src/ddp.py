@@ -1,9 +1,9 @@
 import numpy as np
 
-class DDP:
+class iLQRSolver: # Renamed class DDP to iLQRSolver
     def __init__(self, dynamics_fn, cost_fn, state_dim, control_dim, horizon):
         """
-        Iterative Linear Quadratic Regulator (iLQR) style Differential Dynamic Programming (DDP).
+        Iterative Linear Quadratic Regulator (iLQR) Solver.
         This implementation uses numerical differentiation for dynamics Jacobians (fx, fu)
         and expects the cost function to provide its own analytical derivatives
         (lx, lu, lxx, luu, lux).
@@ -479,12 +479,12 @@ if __name__ == '__main__':
             return cost, None, None, None, None, None
 
 
-    # Initialize DDP
-    ddp_solver = DDP(dynamics_fn=simple_dynamics,
-                     cost_fn=simple_cost,
-                     state_dim=STATE_DIM,
-                     control_dim=CONTROL_DIM,
-                     horizon=HORIZON)
+    # Initialize iLQR Solver
+    ilqr_solver = iLQRSolver(dynamics_fn=simple_dynamics,
+                             cost_fn=simple_cost,
+                             state_dim=STATE_DIM,
+                             control_dim=CONTROL_DIM,
+                             horizon=HORIZON)
 
     # Initial state and control guess
     x0 = np.array([0.0, 0.0]) # Start at origin, zero velocity
@@ -494,10 +494,10 @@ if __name__ == '__main__':
     # U_initial = np.random.randn(HORIZON, CONTROL_DIM) * 0.01
 
 
-    print("Running DDP for simple 1D system...")
-    X_opt, U_opt, final_cost = ddp_solver.run(x0, U_initial, max_iters=50, tol=1e-5)
+    print("Running iLQR for simple 1D system...")
+    X_opt, U_opt, final_cost, cost_history = ilqr_solver.run(x0, U_initial, max_iters=50, tol=1e-5) # Store cost_history
 
-    print("\n--- DDP Results ---")
+    print("\n--- iLQR Results ---")
     print(f"Final cost: {final_cost}")
     print(f"Initial state: {X_opt[0]}")
     print(f"Final state: {X_opt[-1]}")
