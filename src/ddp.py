@@ -1,35 +1,47 @@
 import numpy as np
 
-class iLQRSolver: # Renamed class DDP to iLQRSolver
-    def __init__(self, dynamics_fn, cost_fn, state_dim, control_dim, horizon):
+class iLQRSolver:
+    def __init__(self, dynamics_fn, cost_fn, state_dim, control_dim, horizon,
+                 fx_func=None, fu_func=None, cost_derivatives_func=None):
         """
         Iterative Linear Quadratic Regulator (iLQR) Solver.
-        This implementation uses numerical differentiation for dynamics Jacobians (fx, fu)
-        and expects the cost function to provide its own analytical derivatives
-        (lx, lu, lxx, luu, lux).
+        Can use numerical differentiation for dynamics if specific derivative functions are not provided.
 
         Args:
-            dynamics_fn (callable): Function `next_x = f(x, u)` that describes the system dynamics.
-                                   It takes current state `x` and control `u` and returns the next state.
-            cost_fn (callable): Function `cost, lx, lu, lxx, luu, lux = l(x, u, k, is_final, get_derivatives)`
-                                that computes the cost for a given state `x`, control `u` at time step `k`.
-                                - `is_final` (bool): True if it's the terminal cost (u is ignored or dummy).
-                                - `get_derivatives` (bool): If True, the function must return the cost
-                                  and its first and second derivatives (gradients and Hessians).
-                                  lx: gradient of cost wrt x.
-                                  lu: gradient of cost wrt u.
-                                  lxx: Hessian of cost wrt x.
-                                  luu: Hessian of cost wrt u.
-                                  lux: Cross-term Hessian of cost wrt u and x.
+            dynamics_fn (callable): Function `next_x = f(x, u)` for system simulation.
+            cost_fn (callable): Function `cost = l(x, u, k, is_final)` for scalar cost.
+                                OR, if cost_derivatives_func is None, this function should be
+                                `cost, lx, lu, lxx, luu, lux = l(x, u, k, is_final, get_derivatives=True)`.
             state_dim (int): Dimension of the state vector `x`.
             control_dim (int): Dimension of the control input vector.
             horizon (int): Number of time steps in the trajectory (N).
+            fx_func (callable, optional): CasADi-generated function for Jacobian of dynamics wrt x.
+                                         Signature: fx_matrix = fx_func(x, u).
+            fu_func (callable, optional): CasADi-generated function for Jacobian of dynamics wrt u.
+                                         Signature: fu_matrix = fu_func(x, u).
+            cost_derivatives_func (callable, optional):
+                CasADi-generated function for cost and its derivatives.
+                Signature: cost, lx, lu, lxx, luu, lux = func(x, u, is_final_flag)
+                           where is_final_flag is 0 for running, 1 for terminal.
+                           (Terminal cost ignores u, so pass dummy u like np.zeros(control_dim)).
         """
-        self.dynamics_fn = dynamics_fn
-        self.cost_fn = cost_fn
+        self.dynamics_fn = dynamics_fn # Used for rollouts
+        self.cost_fn = cost_fn         # Used for scalar cost in rollouts if cost_derivatives_func is provided,
+                                       # otherwise used for derivatives too.
         self.state_dim = state_dim
         self.control_dim = control_dim
-        self.N = horizon # Horizon
+        self.N = horizon
+
+        self.fx_func = fx_func
+        self.fu_func = fu_func
+        self.cost_derivatives_func = cost_derivatives_func
+
+        if self.fx_func is None or self.fu_func is None:
+            print("Warning: Dynamics Jacobians (fx_func, fu_func) not provided. "
+                  "iLQRSolver will use numerical differentiation for dynamics.")
+        if self.cost_derivatives_func is None:
+            print("Warning: cost_derivatives_func not provided. "
+                  "Falling back to cost_fn to provide derivatives.")
 
         # Regularization parameters
         self.reg_factor = 10
@@ -38,27 +50,9 @@ class iLQRSolver: # Renamed class DDP to iLQRSolver
 
     def _compute_derivatives(self, X, U):
         """
-        Compute derivatives (Jacobians and Hessians) of dynamics and cost functions
-        along the nominal trajectory (X, U).
-
-        Dynamics derivatives (fx, fu) are computed numerically using `_get_dynamics_jacobians`.
-        Cost derivatives (lx, lu, lxx, luu, lux) are obtained from the `cost_fn`.
-
-        Args:
-            X (np.array): Current state trajectory (N+1, state_dim).
-            U (np.array): Current control trajectory (N, control_dim).
-
-        Returns:
-            dict: A dictionary containing lists of derivative matrices and vectors:
-                'fx': List of Jacobians of dynamics wrt x (f_x).
-                'fu': List of Jacobians of dynamics wrt u (f_u).
-                'lx': List of gradients of cost wrt x (l_x).
-                'lu': List of gradients of cost wrt u (l_u).
-                'lxx': List of Hessians of cost wrt x (l_xx).
-                'luu': List of Hessians of cost wrt u (l_uu).
-                'lux': List of cross-term Hessians of cost wrt u and x (l_ux).
-                'lx_N': Gradient of terminal cost wrt x.
-                'lxx_N': Hessian of terminal cost wrt x.
+        Compute derivatives for the iLQR backward pass.
+        Uses CasADi-generated functions if provided, otherwise falls back to
+        numerical differentiation for dynamics and expects cost_fn to provide its derivatives.
         """
         fx_list = []
         fu_list = []
@@ -68,32 +62,54 @@ class iLQRSolver: # Renamed class DDP to iLQRSolver
         luu_list = []
         lux_list = []
 
-        for k in range(self.N): # For each time step up to N-1 for controls
-            x = X[k]
-            u = U[k]
+        for k in range(self.N):
+            x_k = X[k]
+            u_k = U[k]
 
-            # Get cost derivatives
-            # cost_fn should be able to return (cost, l_x, l_u, l_xx, l_uu, l_ux)
-            # For simplicity, we'll assume cost_fn is extended to return these
-            # or we have separate functions. Here, we'll use placeholders.
-            # This part needs to be properly implemented with the actual robot model.
-            _, lx_k, lu_k, lxx_k, luu_k, lux_k = self.cost_fn(x, u, k, is_final=False, get_derivatives=True)
-            lx_list.append(lx_k)
-            lu_list.append(lu_k)
-            lxx_list.append(lxx_k)
-            luu_list.append(luu_k)
-            lux_list.append(lux_k)
+            # Dynamics derivatives
+            if self.fx_func and self.fu_func:
+                fx_val = self.fx_func(x_k, u_k)
+                fu_val = self.fu_func(x_k, u_k)
+                # Ensure they are numpy arrays if coming from CasADi
+                fx_list.append(np.asarray(fx_val))
+                fu_list.append(np.asarray(fu_val))
+            else: # Fallback to numerical differentiation
+                Fx_k_num, Fu_k_num = self._get_dynamics_jacobians(x_k, u_k)
+                fx_list.append(Fx_k_num)
+                fu_list.append(Fu_k_num)
 
-            # Get dynamics derivatives (Jacobians) numerically
-            Fx_k, Fu_k = self._get_dynamics_jacobians(x, u)
-            fx_list.append(Fx_k)
-            fu_list.append(Fu_k)
+            # Cost derivatives
+            if self.cost_derivatives_func:
+                # is_final_flag = 0 for running cost
+                _, lx_k_val, lu_k_val, lxx_k_val, luu_k_val, lux_k_val = \
+                    self.cost_derivatives_func(x_k, u_k, 0)
+                lx_list.append(np.asarray(lx_k_val).flatten())
+                lu_list.append(np.asarray(lu_k_val).flatten())
+                lxx_list.append(np.asarray(lxx_k_val))
+                luu_list.append(np.asarray(luu_k_val))
+                lux_list.append(np.asarray(lux_k_val))
+            else: # Fallback to original cost_fn
+                _, lx_k_orig, lu_k_orig, lxx_k_orig, luu_k_orig, lux_k_orig = \
+                    self.cost_fn(x_k, u_k, k, is_final=False, get_derivatives=True)
+                lx_list.append(lx_k_orig)
+                lu_list.append(lu_k_orig)
+                lxx_list.append(lxx_k_orig)
+                luu_list.append(luu_k_orig)
+                lux_list.append(lux_k_orig)
 
-        # Terminal cost derivatives (l_N, l_x_N, l_xx_N)
-        # Control u_N is often ignored or zero for terminal cost calculation.
+        # Terminal cost derivatives
         x_N = X[self.N]
-        # Pass a dummy control for the terminal cost, as it's not used.
-        _, lx_N, _, lxx_N, _, _ = self.cost_fn(x_N, np.zeros(self.control_dim), self.N, is_final=True, get_derivatives=True)
+        if self.cost_derivatives_func:
+            # is_final_flag = 1 for terminal cost, pass dummy control
+            _, lx_N_val, _, lxx_N_val, _, _ = \
+                self.cost_derivatives_func(x_N, np.zeros(self.control_dim), 1)
+            lx_N_final = np.asarray(lx_N_val).flatten()
+            lxx_N_final = np.asarray(lxx_N_val)
+        else:
+            _, lx_N_orig, _, lxx_N_orig, _, _ = \
+                self.cost_fn(x_N, np.zeros(self.control_dim), self.N, is_final=True, get_derivatives=True)
+            lx_N_final = lx_N_orig
+            lxx_N_final = lxx_N_orig
 
         derivatives = {
             'fx': fx_list, 'fu': fu_list,
@@ -557,8 +573,123 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"Error during plotting: {e}. Skipping plotting.")
 
-    print("DDP example finished.")
+    print("iLQR example with manual/numerical derivatives finished.") # Changed DDP to iLQR
 
+    # --- CasADi Example for the same 1D system ---
+    print("\n--- Running iLQR for simple 1D system with CasADi derivatives ---")
+    try:
+        import casadi as ca
+
+        # Define symbolic variables
+        x_sym = ca.SX.sym('x', STATE_DIM)  # State [pos, vel]
+        u_sym = ca.SX.sym('u', CONTROL_DIM)  # Control [accel]
+
+        # Symbolic dynamics
+        x_next_sym = ca.vertcat(
+            x_sym[0] + x_sym[1] * DT,  # pos_next = pos + vel * DT
+            x_sym[1] + u_sym[0] * DT   # vel_next = vel + accel * DT
+        )
+        f_sym = ca.Function('f_simple_sym', [x_sym, u_sym], [x_next_sym])
+
+        # Symbolic Jacobians of dynamics
+        fx_sym = ca.jacobian(x_next_sym, x_sym)
+        fu_sym = ca.jacobian(x_next_sym, u_sym)
+        f_x_func = ca.Function('f_x_simple', [x_sym, u_sym], [fx_sym])
+        f_u_func = ca.Function('f_u_simple', [x_sym, u_sym], [fu_sym])
+
+        # Symbolic cost function (running cost)
+        err_sym_running = x_sym - TARGET_STATE
+        l_running_sym = 0.5 * Q_state_cost * ca.dot(err_sym_running, err_sym_running) + \
+                        0.5 * R_control_cost * ca.dot(u_sym, u_sym)
+
+        # Symbolic cost function (terminal cost)
+        err_sym_final = x_sym - TARGET_STATE
+        l_final_sym = 0.5 * Q_final_cost * ca.dot(err_sym_final, err_sym_final)
+
+        # Create callable functions for cost and its derivatives
+        # Running cost derivatives
+        l_x_sym = ca.gradient(l_running_sym, x_sym)
+        l_u_sym = ca.gradient(l_running_sym, u_sym)
+        l_xx_sym = ca.hessian(l_running_sym, x_sym)[0]
+        l_uu_sym = ca.hessian(l_running_sym, u_sym)[0]
+        l_ux_sym = ca.jacobian(l_u_sym, x_sym) # Hessian of l wrt u, then x (cross term)
+
+        cost_running_func = ca.Function('l_running', [x_sym, u_sym], [l_running_sym, l_x_sym, l_u_sym, l_xx_sym, l_uu_sym, l_ux_sym])
+
+        # Terminal cost derivatives
+        l_final_x_sym = ca.gradient(l_final_sym, x_sym)
+        l_final_xx_sym = ca.hessian(l_final_sym, x_sym)[0]
+        # For terminal cost, lu, luu, lux are zero as there's no control input
+        cost_final_func = ca.Function('l_final', [x_sym], [l_final_sym, l_final_x_sym, l_final_xx_sym])
+
+
+        # Wrapper for the cost function to be used by the iLQRSolver
+        def casadi_cost_wrapper(state, control, k, is_final, get_derivatives):
+            if not get_derivatives: # DDP's forward pass only needs scalar cost
+                if is_final:
+                    return cost_final_func(state)[0].full().item(), None, None, None, None, None
+                else:
+                    return cost_running_func(state, control)[0].full().item(), None, None, None, None, None
+
+            if is_final:
+                cost, lx, lxx = cost_final_func(state)
+                # Need to return all 6 derivative components, some will be zero
+                lu = np.zeros(CONTROL_DIM)
+                luu = np.zeros((CONTROL_DIM, CONTROL_DIM))
+                lux = np.zeros((CONTROL_DIM, STATE_DIM))
+                return cost.full().item(), lx.full().flatten(), lu, lxx.full(), luu, lux
+            else:
+                cost, lx, lu, lxx, luu, lux = cost_running_func(state, control)
+                return cost.full().item(), lx.full().flatten(), lu.full().flatten(), \
+                       lxx.full(), luu.full(), lux.full()
+
+        # Wrapper for dynamics to be used by iLQRSolver if it still uses it for rollouts
+        # The current iLQRSolver uses self.dynamics_fn for rollouts.
+        # If we modify iLQRSolver to take fx_func, fu_func for derivative calculations,
+        # it still needs a way to simulate.
+        # This numerical_dynamics_fn can still be the original one.
+        numerical_dynamics_fn = simple_dynamics # Original numerical one for rollouts
+
+        # --- Option A: Modify iLQRSolver to accept precomputed derivative functions ---
+        # This would be the cleaner way. For this example, we'll simulate this by
+        # overriding _get_dynamics_jacobians if the solver were an instance variable
+        # or by creating a modified solver.
+        # For now, let's assume the solver is modified to use these if provided.
+        # (This part will be more fully addressed in the next plan step: Refactor Solvers)
+
+        # Create a temporary iLQRSolver that uses CasADi derivatives for this example
+        # This is a bit of a hack for the example without modifying the main class yet.
+        class iLQRSolverWithCasADi(iLQRSolver):
+            def _get_dynamics_jacobians(self, x, u):
+                # Call the CasADi-generated functions
+                fx_val = f_x_func(x, u).full()
+                fu_val = f_u_func(x, u).full()
+                return fx_val, fu_val
+
+        ilqr_solver_casadi = iLQRSolverWithCasADi(
+            dynamics_fn=numerical_dynamics_fn, # Still needed for rollouts
+            cost_fn=casadi_cost_wrapper,       # Cost function now uses CasADi derivatives
+            state_dim=STATE_DIM,
+            control_dim=CONTROL_DIM,
+            horizon=HORIZON
+        )
+
+        print("Running iLQR (with CasADi derivatives) for simple 1D system...")
+        X_opt_casadi, U_opt_casadi, final_cost_casadi, cost_history_casadi = ilqr_solver_casadi.run(
+            x0, U_initial, max_iters=50, tol=1e-5
+        )
+
+        print("\n--- iLQR (CasADi) Results ---")
+        print(f"Final cost: {final_cost_casadi}")
+        print(f"Initial state: {X_opt_casadi[0]}")
+        print(f"Final state: {X_opt_casadi[-1]}")
+
+        # (Optional) Add plotting for CasADi results similar to the above example
+
+    except ImportError:
+        print("CasADi not found. Skipping CasADi example.")
+    except Exception as e:
+        print(f"Error during CasADi example: {e}")
 
 class FullDDPSolver(iLQRSolver):
     def __init__(self, dynamics_fn, cost_fn, state_dim, control_dim, horizon,

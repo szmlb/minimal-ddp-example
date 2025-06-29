@@ -189,14 +189,91 @@ def main():
                        arm_cost_function(arm, state_x, control_u, k_step, is_final, compute_derivs)
 
 
-    # --- 4. Initialize iLQR Solver --- # Changed DDP to iLQR
-    ilqr_solver = iLQRSolver(dynamics_fn=dynamics_fn_for_ddp, # Changed DDP to iLQRSolver
-                             cost_fn=cost_fn_for_ddp,
+    # --- 4. Initialize iLQR Solver ---
+    # Option A: Using existing numerical differentiation within iLQRSolver
+    ilqr_solver = iLQRSolver(dynamics_fn=dynamics_fn_for_ddp,
+                             cost_fn=cost_fn_for_ddp, # This cost_fn must provide its own derivatives
                              state_dim=arm.state_dim,
                              control_dim=arm.control_dim,
                              horizon=HORIZON)
 
-    # --- 5. Initial Control Guess for iLQR --- # Changed DDP to iLQR
+    # --- Conceptual CasADi Integration ---
+    # The following block shows how you would define dynamics and cost using CasADi
+    # and then pass CasADi-generated derivative functions to the iLQRSolver.
+    # This part is conceptual and would replace/augment the above instantiation.
+    """
+    try:
+        import casadi as ca
+        print("\\n--- Conceptual: Setting up CasADi symbolic functions ---")
+
+        # Symbolic state and control
+        x_s = ca.SX.sym('x_s', arm.state_dim)
+        u_s = ca.SX.sym('u_s', arm.control_dim)
+
+        # Symbolic arm dynamics (simplified, direct from arm.dynamics logic)
+        # For a real CasADi implementation, arm.dynamics would be rewritten symbolically
+        # or a new symbolic_dynamics function created.
+        # Here, we'll just outline the structure.
+        # l1_s, l2_s = LINK_LENGTHS # If these are symbolic too
+        # th1_s, th2_s, om1_s, om2_s = x_s[0], x_s[1], x_s[2], x_s[3]
+        # al1_s, al2_s = u_s[0], u_s[1]
+        # next_om1_s = ca.fmin(ca.fmax(om1_s + al1_s * DT, -arm.max_angular_velocity), arm.max_angular_velocity)
+        # next_om2_s = ca.fmin(ca.fmax(om2_s + al2_s * DT, -arm.max_angular_velocity), arm.max_angular_velocity)
+        # next_th1_s = th1_s + next_om1_s * DT
+        # next_th2_s = th2_s + next_om2_s * DT
+        # x_next_s = ca.vertcat(next_th1_s, next_th2_s, next_om1_s, next_om2_s)
+        # f_s_arm = ca.Function('f_s_arm', [x_s, u_s], [x_next_s])
+
+        # Placeholder for actual symbolic dynamics function using CasADi
+        # For this conceptual outline, we'll assume f_s_arm is correctly defined.
+        # fx_s_arm_func = ca.Function('fx_s_arm', [x_s, u_s], [ca.jacobian(x_next_s, x_s)])
+        # fu_s_arm_func = ca.Function('fu_s_arm', [x_s, u_s], [ca.jacobian(x_next_s, u_s)])
+
+        # Symbolic arm cost function (also needs full symbolic rewrite of arm_cost_function)
+        # This would involve symbolic forward kinematics first.
+        # Example: symbolic FK for EE position
+        # l1, l2 = LINK_LENGTHS
+        # th1, th2_rel = x_s[0], x_s[1]
+        # x_elbow_s = l1 * ca.cos(th1)
+        # y_elbow_s = l1 * ca.sin(th1)
+        # x_ee_s = x_elbow_s + l2 * ca.cos(th1 + th2_rel)
+        # y_ee_s = y_elbow_s + l2 * ca.sin(th1 + th2_rel)
+        # ee_pos_s = ca.vertcat(x_ee_s, y_ee_s)
+
+        # Running cost (symbolic)
+        # l_running_s = 0.5 * R_CONTROL_COST * ca.dot(u_s, u_s) # + other terms if any
+        # Terminal cost (symbolic)
+        # ee_error_s = ee_pos_s - TARGET_EE_POS
+        # state_error_final_s = x_s - ca.vertcat(x_s[0], x_s[1], 0, 0)
+        # l_terminal_s = 0.5 * Q_EE_FINAL_COST * ca.dot(ee_error_s, ee_error_s) + \
+        #                0.5 * Q_STATE_FINAL_COST * ca.dot(state_error_final_s, state_error_final_s)
+
+        # CasADi function for all cost derivatives (conceptual)
+        # cost_derivatives_s_func = create_casadi_cost_derivatives_function(l_running_s, l_terminal_s, x_s, u_s)
+        # This function would internally compute gradients and Hessians.
+
+        # Option B: Instantiate iLQRSolver with CasADi-generated functions
+        # ilqr_solver = iLQRSolver(
+        #     dynamics_fn=arm.dynamics, # Still needed for numerical rollouts by current solver
+        #     cost_fn=cost_fn_for_ddp,    # For scalar cost in rollouts if cost_derivatives_s_func is used
+        #     state_dim=arm.state_dim,
+        #     control_dim=arm.control_dim,
+        #     horizon=HORIZON,
+        #     fx_func=fx_s_arm_func,          # Pass CasADi function for fx
+        #     fu_func=fu_s_arm_func,          # Pass CasADi function for fu
+        #     cost_derivatives_func=cost_derivatives_s_func # Pass CasADi function for cost derivatives
+        # )
+        print("    (Conceptual CasADi functions would be generated here)")
+
+    except ImportError:
+        print("CasADi not found, skipping conceptual CasADi setup block.")
+    except Exception as e:
+        print(f"Error in conceptual CasADi block: {e}")
+    """
+    # End of Conceptual CasADi Integration ---
+
+
+    # --- 5. Initial Control Guess for iLQR ---
     # A common starting point is zero controls.
     # Small random controls can sometimes help break symmetries or explore if zero gets stuck.
     # U_initial_guess = np.zeros((HORIZON, arm.control_dim))

@@ -186,16 +186,32 @@ You can modify parameters in `src/main.py` to experiment:
 *   **iLQR Solver Parameters (`max_iters`, `tol` in `ilqr_solver.run(...)`)**: Control the iLQR convergence criteria.
 *   **Naive Trajectory Target (`TARGET_ANGLES_NAIVE_DEG`)**: Modify the target joint configuration for the naive comparison.
 
-## Further Exploration
+## Further Exploration & CasADi Integration
 
-*   **Analytical Dynamics Derivatives:** Implement analytical Jacobians ($f_x, f_u$) for the `TwoLinkArm` dynamics in `src/robot_env.py` (or by modifying `src/ddp.py` to accept them). This would significantly speed up the iLQR computation compared to the current numerical differentiation.
-*   **Implement Full DDP:** As discussed, iLQR is a variant of DDP. To implement full DDP:
-    *   The primary change would be to incorporate second-order derivatives of the dynamics ($f_{xx}, f_{uu}, f_{ux}$) into the calculation of $Q_{xx}, Q_{uu}, Q_{ux}$ during the backward pass of the solver (currently `iLQRSolver` in `src/ddp.py`).
-    *   This requires:
-        *   A method to compute these Hessians of dynamics (either analytically or numerically).
-        *   Modifying the `backward_pass` in the solver to include these terms. For example, the $Q_{xx}$ update would conceptually become $Q_{xx} = l_{xx} + f_x^T V_{xx}' f_x + V_x' \cdot f_{xx}$ (plus similar additions for $Q_{uu}$ and $Q_{ux}$).
-*   **More Complex Robot Models:** Adapt the framework for robots with more degrees of freedom or different types of dynamics (e.g., using libraries like Pinocchio or PyBullet for rigid body dynamics).
-*   **Obstacle Avoidance:** Integrate obstacle information into the `robot_env.py` and add penalty terms to the `arm_cost_function` to encourage collision-free paths.
-*   **Different Cost Functions:** Experiment with a wider variety of cost terms, such as minimizing joint velocities/jerks, tracking a specific end-effector orientation, or following a predefined geometric path.
-*   **Control Limits:** Implement stricter handling of control input limits (e.g., joint torque or acceleration limits). This can be done by adding them as constraints (more complex, often requiring augmented Lagrangian methods), by penalizing violations in the cost function, or by clamping controls in the forward pass (as is partially indicated in comments within the current `iLQRSolver`).
+A significant enhancement to this project would be the integration of a symbolic math framework like **CasADi** for automatic differentiation (AD).
+
+**Benefits of CasADi:**
+*   **Exact Derivatives:** Automatically compute exact Jacobians and Hessians for dynamics and cost functions, eliminating manual derivation and numerical inaccuracies.
+*   **Speed:** CasADi can generate efficient C code for derivative calculations, leading to faster solver iterations.
+*   **Flexibility:** Simplifies modifications to robot models or cost functions, as derivatives are re-derived automatically.
+
+**Conceptual CasADi Integration Steps:**
+1.  **Symbolic Definitions:** Rewrite the `TwoLinkArm` dynamics and `arm_cost_function` using CasADi's symbolic variables and operations.
+2.  **AD for Derivatives:**
+    *   Use `casadi.jacobian` for $f_x, f_u$.
+    *   Use `casadi.gradient` and `casadi.hessian` for $l_x, l_u, l_{xx}, l_{uu}, l_{ux}$ (and terminal cost derivatives).
+    *   For full DDP, CasADi would also compute Hessians of dynamics ($f_{xx}, f_{uu}, f_{ux}$), typically by taking Hessians of each component of the dynamics vector $f$.
+3.  **Callable Functions:** Convert these symbolic derivative expressions into callable Python functions using `casadi.Function`.
+4.  **Solver Modification:**
+    *   The `iLQRSolver` (and `FullDDPSolver`) would be modified (as partially done in `src/ddp.py`) to accept these callable derivative functions during initialization.
+    *   The internal `_compute_derivatives` method would then use these pre-compiled functions instead of numerical differentiation or expecting the cost function to return derivatives directly.
+    *   The `src/main.py` script includes a conceptual (commented-out) block demonstrating how these symbolic definitions and CasADi function generation would look for the `TwoLinkArm`. The `if __name__ == '__main__'` block in `src/ddp.py` also contains a working example of using CasADi for the simpler 1D system.
+
+**Other Potential Enhancements:**
+*   **Analytical Dynamics Derivatives (without CasADi):** Manually derive and implement analytical Jacobians ($f_x, f_u$) for the `TwoLinkArm` dynamics.
+*   **Complete Full DDP Implementation:** Fully implement the computation (e.g., via CasADi or numerical Hessians) and utilization of second-order dynamics derivatives in the `FullDDPSolver`.
+*   **More Complex Robot Models:** Adapt for robots with more DoFs or using rigid body dynamics libraries.
+*   **Obstacle Avoidance:** Add collision penalties to the cost function.
+*   **Varied Cost Functions:** Explore costs for minimizing jerk, tracking orientation, etc.
+*   **Control Limits:** Implement robust handling of control input saturation.
 ```
