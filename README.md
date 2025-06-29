@@ -151,8 +151,21 @@ This sketch is for illustrative purposes to show the structural difference from 
 
 You can install the required libraries using pip:
 ```bash
-pip install numpy matplotlib
+pip install numpy matplotlib pytest
 ```
+
+## Testing
+
+Basic tests are included in the `tests/` directory to verify core components:
+*   `tests/test_main_components.py`:
+    *   `test_arm_cost_derivatives`: Checks the analytical derivatives of the `arm_cost_function` against numerical finite differences.
+    *   `test_ilqr_convergence_on_arm`: Verifies that the `iLQRSolver` can converge on a simple reaching task for the `TwoLinkArm`, reduce cost, and achieve reasonable proximity to the target.
+
+To run the tests, navigate to the project root directory and use pytest:
+```bash
+python -m pytest
+```
+(You might need to install pytest: `pip install pytest`)
 
 ## How to Run
 
