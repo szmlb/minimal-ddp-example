@@ -184,15 +184,23 @@ class DDP:
 
             # Q-function expansion terms (derivatives of Q function)
             # Q(x,u) = l(x,u) + V'(f(x,u))
-            # V' is value function at next step (k+1)
+            # V' is value function at next step (k+1), so V_x and V_xx are V_{k+1,x} and V_{k+1,xx}
+
             Q_x = lx + fx.T @ V_x
             Q_u = lu + fu.T @ V_x
+
+            # For iLQR, we use only first-order derivatives of dynamics (fx, fu)
             Q_xx = lxx + fx.T @ V_xx @ fx
-            # For iLQR, terms involving second derivatives of dynamics (f_xx, f_uu, f_ux) are ignored.
-            # If using full DDP, these would be:
-            # Q_xx += V_x.T @ f_xx (if f_xx is tensor V_x is contracted)
-            Q_uu = luu + fu.T @ V_xx @ fu # Add V_x.T @ f_uu for full DDP
-            Q_ux = lux + fu.T @ V_xx @ fx # Add V_x.T @ f_ux for full DDP
+            Q_uu = luu + fu.T @ V_xx @ fu
+            Q_ux = lux + fu.T @ V_xx @ fx
+
+            # For full DDP, second-order derivatives of dynamics (f_xx, f_uu, f_ux) are also needed:
+            # These terms would be added if self.is_full_ddp (assuming such a flag exists):
+            #   f_xx_k, f_uu_k, f_ux_k = self._get_dynamics_hessians(X[k], U[k]) # Hypothetical function
+            #   Q_xx += np.einsum('i,ijk->jk', V_x, f_xx_k) # Example of tensor contraction
+            #   Q_uu += np.einsum('i,ijk->jk', V_x, f_uu_k) # Example of tensor contraction
+            #   Q_ux += np.einsum('i,ijk->jk', V_x, f_ux_k) # Example of tensor contraction
+            # Note: The exact form of contraction depends on how f_xx, f_uu, f_ux (tensors) are structured.
 
             # Regularization for Quu to ensure positive definiteness for inversion.
             # This is a common strategy to handle non-convexity or poor conditioning.

@@ -29,11 +29,17 @@ The project includes:
         *   Plot of the end-effector path.
     *   Includes a **naive trajectory generation method** for comparison, highlighting the benefits of DDP. This naive trajectory uses linear interpolation of joint angles to a predefined target configuration and a simple P-controller for execution.
 
-## Differential Dynamic Programming (DDP) / iLQR
+## Differential Dynamic Programming (DDP) and Iterative Linear Quadratic Regulator (iLQR)
 
-DDP is a powerful trajectory optimization algorithm based on dynamic programming and Newton's method. iLQR is a common variant that uses a linear approximation of the dynamics and a quadratic approximation of the cost function in the backward pass.
+Differential Dynamic Programming (DDP) is a trajectory optimization algorithm that uses dynamic programming and second-order approximations (like Newton's method) to find optimal controls for nonlinear systems. Iterative Linear Quadratic Regulator (iLQR) is a widely used variant of DDP.
 
-### Mathematical Formulation of iLQR
+**The core difference lies in how they approximate the dynamics:**
+*   **Full DDP:** Uses a second-order Taylor expansion of the system dynamics $f(x,u)$ during the backward pass. This involves Hessians of the dynamics ($f_{xx}, f_{uu}, f_{ux}$).
+*   **iLQR:** Simplifies this by using only a first-order Taylor expansion of the dynamics (i.e., linearization), thus ignoring the $f_{xx}, f_{uu}, f_{ux}$ terms. This makes computations simpler, as Hessians of dynamics can be complex to derive and compute.
+
+**This project implements the iLQR variant.** The mathematical formulation below details iLQR.
+
+### Mathematical Formulation (iLQR variant)
 
 The goal of iLQR is to find a sequence of control inputs $U = \{u_0, u_1, ..., u_{N-1}\}$ that minimizes a total cost $J$ for a system with discrete-time dynamics.
 
@@ -41,56 +47,64 @@ The goal of iLQR is to find a sequence of control inputs $U = \{u_0, u_1, ..., u
 The system evolves according to nonlinear dynamics:
 $$x_{k+1} = f(x_k, u_k)$$
 where $x_k$ is the state at time step $k$ and $u_k$ is the control input at time step $k$.
+For iLQR, we linearize these dynamics around the nominal trajectory $(\bar{x}_k, \bar{u}_k)$:
+$$\delta x_{k+1} \approx f_x \delta x_k + f_u \delta u_k$$
+where $\delta x_k = x_k - \bar{x}_k$, $\delta u_k = u_k - \bar{u}_k$, $f_x = \frac{\partial f}{\partial x}(\bar{x}_k, \bar{u}_k)$, and $f_u = \frac{\partial f}{\partial u}(\bar{x}_k, \bar{u}_k)$.
 
 **2. Cost Function:**
 The total cost $J(X, U)$ is the sum of running costs $l(x_k, u_k)$ at each time step and a final terminal cost $l_f(x_N)$:
 $$J(X, U) = \sum_{k=0}^{N-1} l(x_k, u_k) + l_f(x_N)$$
-where $X = \{x_0, ..., x_N\}$ is the state trajectory.
+where $X = \{x_0, ..., x_N\}$ is the state trajectory. We use a quadratic approximation of the cost around the nominal trajectory.
 
 **3. Value Function:**
 The optimal cost-to-go, or Value Function $V_k(x)$, is the minimum cost achievable starting from state $x$ at time $k$ until the final time $N$.
 $$V_k(x) = \min_{u_k,...,u_{N-1}} \left[ \sum_{j=k}^{N-1} l(x_j, u_j) + l_f(x_N) \right]$$
 The value function at the final step is simply the terminal cost:
 $$V_N(x_N) = l_f(x_N)$$
+Its quadratic approximation around $\bar{x}_N$ is:
+$$V_N(\bar{x}_N + \delta x_N) \approx V_N(\bar{x}_N) + l_{f,x}^T \delta x_N + \frac{1}{2} \delta x_N^T l_{f,xx} \delta x_N$$
+So, $V_{N,x} = l_{f,x}$ and $V_{N,xx} = l_{f,xx}$.
 
 **4. Action-Value Function (Q-function):**
 The Q-function $Q_k(x, u)$ is the cost of taking control $u$ in state $x$ at time $k$, and then following the optimal policy thereafter:
 $$Q_k(x, u) = l(x, u) + V_{k+1}(f(x, u))$$
 
 **5. Backward Pass:**
-The backward pass starts from $k=N-1$ down to $0$. At each step $k$, around the current nominal trajectory $(\bar{x}_k, \bar{u}_k)$:
-*   Approximate $V_{k+1}$ quadratically around $\bar{x}_{k+1}$:
-    $$V_{k+1}(\bar{x}_{k+1} + \delta x) \approx V_{k+1}(\bar{x}_{k+1}) + V_x^T \delta x + \frac{1}{2} \delta x^T V_{xx} \delta x$$
-    where $V_x = \frac{\partial V_{k+1}}{\partial x}$ and $V_{xx} = \frac{\partial^2 V_{k+1}}{\partial x^2}$ are evaluated at $\bar{x}_{k+1}$. (Note: $V_x$ and $V_{xx}$ here denote derivatives of $V_{k+1}$).
-*   The change in the Q-function, $\delta Q_k(\delta x_k, \delta u_k) = Q_k(\bar{x}_k+\delta x_k, \bar{u}_k+\delta u_k) - Q_k(\bar{x}_k, \bar{u}_k)$, is approximated by expanding $l(x,u)$ to second order and $f(x,u)$ to first order (iLQR assumption):
-    $$\delta x_{k+1} = f(\bar{x}_k+\delta x_k, \bar{u}_k+\delta u_k) - f(\bar{x}_k, \bar{u}_k) \approx f_x \delta x_k + f_u \delta u_k$$
-    (where $f_x = \frac{\partial f}{\partial x}$ and $f_u = \frac{\partial f}{\partial u}$ are Jacobians evaluated at $(\bar{x}_k, \bar{u}_k)$).
-*   This leads to a quadratic approximation of $\delta Q_k$. More explicitly, the derivatives of $Q_k$ (denoted $Q_x, Q_u, Q_{xx}, Q_{uu}, Q_{ux}$) are:
-    $$Q_x = l_x + f_x^T V_x'$$
-    $$Q_u = l_u + f_u^T V_x'$$
-    $$Q_{xx} = l_{xx} + f_x^T V_{xx}' f_x$$
-    $$Q_{uu} = l_{uu} + f_u^T V_{xx}' f_u$$
-    $$Q_{ux} = l_{ux} + f_u^T V_{xx}' f_x$$
-    (Here, $V_x'$ and $V_{xx}'$ are $V_x$ and $V_{xx}$ from step $k+1$. $l_x, l_u, l_{xx}, l_{uu}, l_{ux}$ are derivatives of the running cost $l(x_k, u_k)$.)
-    (Note: iLQR ignores terms involving second derivatives of dynamics like $V_x' f_{xx}$, which would appear in full DDP).
-*   The optimal control update $\delta u_k^*$ is found by minimizing the quadratic approximation of $Q_k$ w.r.t $\delta u_k$: $\frac{\partial Q_k}{\partial (\delta u_k)} = Q_u + Q_{uu}\delta u_k + Q_{ux}\delta x_k = 0$.
-    This gives: $\delta u_k^* = -Q_{uu}^{-1} (Q_u + Q_{ux} \delta x_k)$.
-    This can be written as a linear feedback policy: $\delta u_k^* = k_k + K_k \delta x_k$, where:
-    $$k_k = -Q_{uu}^{-1} Q_u \quad \text{(feedforward term)}$$
-    $$K_k = -Q_{uu}^{-1} Q_{ux} \quad \text{(feedback gain matrix)}$$
-    (Regularization, e.g., $Q_{uu,reg} = Q_{uu} + \lambda I$, is often applied to $Q_{uu}$ before inversion to ensure positive definiteness.)
-*   The new value function derivatives for step $k$ are updated using these gains:
-    $$V_x(k) = Q_x + K_k^T Q_{uu} k_k + K_k^T Q_u + Q_{ux}^T k_k$$
-    $$V_{xx}(k) = Q_{xx} + K_k^T Q_{uu} K_k + K_k^T Q_{ux} + Q_{ux}^T K_k$$
-    (Simpler, often cited forms: $V_x(k) = Q_x - K_k^T Q_{uu} k_k$ and $V_{xx}(k) = Q_{xx} - K_k^T Q_{uu} K_k$)
+The backward pass iterates from $k=N-1$ down to $0$. At each step $k$, we approximate $V_{k+1}$ quadratically around $\bar{x}_{k+1}$:
+$$V_{k+1}(\bar{x}_{k+1} + \delta x) \approx V_{k+1}(\bar{x}_{k+1}) + V_{k+1,x}^T \delta x + \frac{1}{2} \delta x^T V_{k+1,xx} \delta x$$
+The local quadratic model of the Q-function around $(\bar{x}_k, \bar{u}_k)$ for deviations $(\delta x_k, \delta u_k)$ is:
+$$\delta Q_k \approx \frac{1}{2} \begin{bmatrix} \delta x_k \\ \delta u_k \end{bmatrix}^T \begin{bmatrix} Q_{xx} & Q_{ux}^T \\ Q_{ux} & Q_{uu} \end{bmatrix} \begin{bmatrix} \delta x_k \\ \delta u_k \end{bmatrix} + \begin{bmatrix} Q_x^T & Q_u^T \end{bmatrix} \begin{bmatrix} \delta x_k \\ \delta u_k \end{bmatrix}$$
+The derivatives of $Q_k$ (the $Q$-factors) are (with $V_x'$ and $V_{xx}'$ denoting derivatives of $V_{k+1}$):
+$$Q_x = l_x + f_x^T V_x'$$
+$$Q_u = l_u + f_u^T V_x'$$
+$$Q_{xx} = l_{xx} + f_x^T V_{xx}' f_x$$
+$$Q_{uu} = l_{uu} + f_u^T V_{xx}' f_u$$
+$$Q_{ux} = l_{ux} + f_u^T V_{xx}' f_x$$
+(Note: $l_x, l_u, l_{xx}, l_{uu}, l_{ux}$ are derivatives of the running cost $l(x_k, u_k)$.)
+
+For **full DDP**, these $Q$-factor equations would additionally include terms involving second-order derivatives of the dynamics $f_{xx}, f_{uu}, f_{ux}$ (often contracted with $V_x'$). For example:
+$Q_{xx}^{DDP} = l_{xx} + f_x^T V_{xx}' f_x + V_x' \cdot f_{xx}$
+$Q_{uu}^{DDP} = l_{uu} + f_u^T V_{xx}' f_u + V_x' \cdot f_{uu}$
+$Q_{ux}^{DDP} = l_{ux} + f_u^T V_{xx}' f_x + V_x' \cdot f_{ux}$
+(where $V_x' \cdot f_{**}$ denotes an appropriate tensor contraction). **iLQR omits these $V_x' \cdot f_{**}$ terms.**
+
+The optimal control update $\delta u_k^*$ is found by minimizing the quadratic model of $Q_k$ w.r.t $\delta u_k$, which means setting $\frac{\partial (\delta Q_k)}{\partial (\delta u_k)} = Q_u + Q_{uu}\delta u_k + Q_{ux}\delta x_k = 0$.
+This gives the control policy update: $\delta u_k^* = k_k + K_k \delta x_k$, where:
+$$k_k = -Q_{uu}^{-1} Q_u \quad \text{(feedforward term)}$$
+$$K_k = -Q_{uu}^{-1} Q_{ux} \quad \text{(feedback gain matrix)}$$
+(Regularization, e.g., $Q_{uu,reg} = Q_{uu} + \lambda I$, is often applied to $Q_{uu}$ before inversion.)
+
+The new value function derivatives for step $k$ are updated:
+$$V_{k,x} = Q_x - K_k^T Q_{uu} k_k$$
+$$V_{k,xx} = Q_{xx} - K_k^T Q_{uu} K_k$$
 
 **6. Forward Pass:**
 A new trajectory is simulated using the computed gains:
 $$u_k^{\text{new}} = \bar{u}_k + \alpha k_k + K_k (x_k^{\text{new}} - \bar{x}_k)$$
 $$x_{k+1}^{\text{new}} = f(x_k^{\text{new}}, u_k^{\text{new}})$$
-A line search parameter $\alpha \in (0, 1]$ is used to scale the feedforward term $k_k$ to ensure that the new trajectory results in a lower cost.
+A line search parameter $\alpha \in (0, 1]$ is used to scale the feedforward term $k_k$ to ensure the new trajectory results in a lower cost.
 
-The process (Backward Pass $\rightarrow$ Forward Pass) is iterated until the improvement in cost is below a threshold or a maximum number of iterations is reached.
+The process (Backward Pass $\rightarrow$ Forward Pass) is iterated until cost improvement is below a threshold or max iterations are reached.
 
 ### Key Algorithm Steps:
 
@@ -175,10 +189,19 @@ You can modify parameters in `src/main.py` to experiment:
 
 ## Further Exploration
 
-*   **Analytical Dynamics Derivatives:** Implement analytical Jacobians (`fx`, `fu`) for the `TwoLinkArm` dynamics in `ddp.py` or `robot_env.py` to significantly speed up DDP computation.
-*   **More Complex Robot Models:** Extend to robots with more degrees of freedom or different dynamics (e.g., including full rigid body dynamics).
-*   **Obstacle Avoidance:** Add obstacle information to the environment and incorporate penalties for collisions into the cost function.
-*   **Different Cost Functions:** Experiment with other cost terms, such as minimizing joint velocities, tracking a specific end-effector orientation, or path following.
-*   **Full DDP:** Implement the full DDP algorithm which also considers second-order derivatives of the dynamics (though iLQR is often sufficient and simpler).
-*   **Control Limits:** Add explicit control input (acceleration/torque) limits within the DDP forward pass or by adding them to the cost function.
+*   **Analytical Dynamics Derivatives:** Implement analytical Jacobians ($f_x, f_u$) for the `TwoLinkArm` dynamics in `src/robot_env.py` (or by modifying `src/ddp.py` to accept them). This would significantly speed up the DDP computation compared to the current numerical differentiation.
+*   **Implement Full DDP:**
+    *   Extend the current iLQR solver in `src/ddp.py` to optionally include second-order dynamics derivatives ($f_{xx}, f_{uu}, f_{ux}$) in the calculation of $Q_{xx}, Q_{uu}, Q_{ux}$ during the backward pass.
+    *   This would require:
+        *   A method to compute or be provided with these Hessians of dynamics (e.g., via numerical differentiation, though more complex, or analytically if the dynamics are simple enough).
+        *   Modifying the `backward_pass` in `ddp.py` to incorporate these terms, likely controlled by a flag in the `DDP` class constructor (e.g., `is_full_ddp=True`).
+        *   The $Q$-factor updates would become (conceptually, showing addition of new terms):
+            $Q_{xx} \leftarrow Q_{xx} + V_x' \cdot f_{xx}$
+            $Q_{uu} \leftarrow Q_{uu} + V_x' \cdot f_{uu}$
+            $Q_{ux} \leftarrow Q_{ux} + V_x' \cdot f_{ux}$
+            (where $V_x' \cdot f_{**}$ indicates an appropriate tensor contraction of the next state's value function gradient with the Hessians of the dynamics).
+*   **More Complex Robot Models:** Adapt the framework for robots with more degrees of freedom or different types of dynamics (e.g., including full rigid body dynamics using libraries like Pinocchio or PyBullet).
+*   **Obstacle Avoidance:** Integrate obstacle information into the `robot_env.py` and add penalty terms to the `arm_cost_function` to encourage collision-free paths.
+*   **Different Cost Functions:** Experiment with a wider variety of cost terms, such as minimizing joint velocities/jerks, tracking a specific end-effector orientation, or following a predefined geometric path.
+*   **Control Limits:** Implement stricter handling of control input limits (e.g., joint torque or acceleration limits). This can be done by adding them as constraints (more complex, often requiring augmented Lagrangian methods) or by penalizing violations in the cost function, or by clamping controls in the forward pass (as is done partially in the current DDP's forward pass comments).
 ```
