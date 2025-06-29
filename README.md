@@ -33,6 +33,67 @@ The project includes:
 
 DDP is a powerful trajectory optimization algorithm based on dynamic programming and Newton's method. iLQR is a common variant that uses a linear approximation of the dynamics and a quadratic approximation of the cost function in the backward pass.
 
+### Mathematical Formulation of iLQR
+
+The goal of iLQR is to find a sequence of control inputs `U = {u_0, u_1, ..., u_{N-1}}` that minimizes a total cost `J` for a system with discrete-time dynamics.
+
+**1. System Dynamics:**
+The system evolves according to nonlinear dynamics:
+`x_{k+1} = f(x_k, u_k)`
+where `x_k` is the state at time step `k` and `u_k` is the control input at time step `k`.
+
+**2. Cost Function:**
+The total cost `J(X, U)` is the sum of running costs `l(x_k, u_k)` at each time step and a final terminal cost `l_f(x_N)`:
+`J(X, U) = Σ_{k=0}^{N-1} l(x_k, u_k) + l_f(x_N)`
+where `X = {x_0, ..., x_N}` is the state trajectory.
+
+**3. Value Function:**
+The optimal cost-to-go, or Value Function `V_k(x)`, is the minimum cost achievable starting from state `x` at time `k` until the final time `N`.
+`V_k(x) = min_{u_k,...,u_{N-1}} [ Σ_{j=k}^{N-1} l(x_j, u_j) + l_f(x_N) ]`
+The value function at the final step is simply the terminal cost:
+`V_N(x_N) = l_f(x_N)`
+
+**4. Action-Value Function (Q-function):**
+The Q-function `Q_k(x, u)` is the cost of taking control `u` in state `x` at time `k`, and then following the optimal policy thereafter:
+`Q_k(x, u) = l(x, u) + V_{k+1}(f(x, u))`
+
+**5. Backward Pass:**
+The backward pass starts from `k=N-1` down to `0`. At each step `k`, around the current nominal trajectory `(x̄_k, ū_k)`:
+*   Approximate `V_{k+1}` quadratically around `x̄_{k+1}`:
+    `V_{k+1}(x̄_{k+1} + δx) ≈ V_{k+1}(x̄_{k+1}) + V_x^T δx + 0.5 δx^T V_{xx} δx`
+    where `V_x = ∂V_{k+1}/∂x` and `V_{xx} = ∂²V_{k+1}/∂x²` are evaluated at `x̄_{k+1}`.
+*   The change in the Q-function, `δQ_k(δx_k, δu_k) = Q_k(x̄_k+δx_k, ū_k+δu_k) - Q_k(x̄_k, ū_k)`, is approximated by expanding `l(x,u)` to second order and `f(x,u)` to first order (iLQR assumption):
+    `δx_{k+1} = f(x̄_k+δx_k, ū_k+δu_k) - f(x̄_k, ū_k) ≈ f_x δx_k + f_u δu_k`
+    (where `f_x = ∂f/∂x` and `f_u = ∂f/∂u` are Jacobians evaluated at `(x̄_k, ū_k)`).
+*   This leads to a quadratic approximation of `δQ_k`:
+    `δQ_k ≈ 0.5 [δx_k^T, δu_k^T] Q̃ [δx_k; δu_k] + [Q_x^T, Q_u^T] [δx_k; δu_k]`
+    (This is a general form; often expanded directly)
+    More explicitly:
+    `Q_x = l_x + f_x^T V_x'`  (prime `V_x'` denotes `V_x` from step `k+1`)
+    `Q_u = l_u + f_u^T V_x'`
+    `Q_{xx} = l_{xx} + f_x^T V_{xx}' f_x`  (iLQR ignores `V_x' f_{xx}` term from full DDP)
+    `Q_{uu} = l_{uu} + f_u^T V_{xx}' f_u`  (iLQR ignores `V_x' f_{uu}` term)
+    `Q_{ux} = l_{ux} + f_u^T V_{xx}' f_x`  (iLQR ignores `V_x' f_{ux}` term)
+    (where `l_x, l_u, l_{xx}, l_{uu}, l_{ux}` are derivatives of the running cost `l(x_k, u_k)`)
+*   The optimal control update `δu_k*` is found by minimizing this quadratic w.r.t `δu_k`: `∂(δQ_k)/∂(δu_k) = 0`.
+    This gives: `δu_k* = -Q_{uu}^{-1} (Q_u + Q_{ux} δx_k)`
+    This can be written as a linear feedback policy: `δu_k* = k_k + K_k δx_k`
+    where:
+    `k_k = -Q_{uu}^{-1} Q_u` (feedforward term)
+    `K_k = -Q_{uu}^{-1} Q_{ux}` (feedback gain matrix)
+    (Regularization `Q̃_{uu} = Q_{uu} + λI` is often used for `Q_{uu}` before inversion.)
+*   The new value function derivatives for step `k` are updated:
+    `V_x(k) = Q_x + K_k^T Q_{uu} k_k + K_k^T Q_u + Q_{ux}^T k_k` (or simpler forms like `V_x = Q_x - K_k^T Q_{uu} k_k`)
+    `V_{xx}(k) = Q_{xx} + K_k^T Q_{uu} K_k + K_k^T Q_{ux} + Q_{ux}^T K_k` (or `V_{xx} = Q_{xx} - K_k^T Q_{uu} K_k`)
+
+**6. Forward Pass:**
+A new trajectory is simulated using the computed gains:
+`u_k^{new} = ū_k + α k_k + K_k (x_k^{new} - x̄_k)`
+`x_{k+1}^{new} = f(x_k^{new}, u_k^{new})`
+A line search parameter `α` (0 < `α` ≤ 1) is used to scale the feedforward term `k_k` to ensure that the new trajectory results in a lower cost.
+
+The process (Backward Pass -> Forward Pass) is iterated until the improvement in cost is below a threshold or a maximum number of iterations is reached.
+
 ### Key Algorithm Steps:
 
 1.  **Initialization:**
