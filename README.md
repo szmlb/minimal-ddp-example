@@ -129,11 +129,19 @@ The process (Backward Pass $\rightarrow$ Forward Pass) is iterated until cost im
 .
 ├── README.md         # This file
 └── src/
-    ├── ddp.py        # Contains the iLQRSolver class
+    ├── ddp.py        # Contains iLQRSolver and a conceptual sketch for FullDDPSolver
     ├── robot_env.py  # 2-Link Arm simulation environment and visualizer
     ├── main.py       # Main script to run iLQR for the arm and visualize
     └── __init__.py   # Makes src a package (optional)
 ```
+
+## Conceptual FullDDPSolver Sketch
+
+The file `src/ddp.py` also contains a class `FullDDPSolver` which is a conceptual sketch inheriting from `iLQRSolver`. It outlines where modifications would be needed to implement full DDP, primarily:
+*   **Dynamics Hessians:** It includes a placeholder method `_get_dynamics_hessians` that would need to compute or be provided with $f_{xx}, f_{uu}, f_{ux}$.
+*   **Backward Pass:** The `backward_pass` method is overridden to show where terms involving these Hessians (contracted with $V_x'$) would be added to the $Q$-factor calculations ($Q_{xx}, Q_{uu}, Q_{ux}$).
+
+This sketch is for illustrative purposes to show the structural difference from iLQR and is not a fully operational DDP solver without a concrete implementation for computing and utilizing the dynamics Hessians.
 
 ## Requirements
 

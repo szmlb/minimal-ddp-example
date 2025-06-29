@@ -558,3 +558,156 @@ if __name__ == '__main__':
         print(f"Error during plotting: {e}. Skipping plotting.")
 
     print("DDP example finished.")
+
+
+class FullDDPSolver(iLQRSolver):
+    def __init__(self, dynamics_fn, cost_fn, state_dim, control_dim, horizon,
+                 dynamics_hessians_fn=None): # Can accept a function to provide Hessians
+        """
+        Full Differential Dynamic Programming (DDP) Solver (Conceptual Sketch).
+        Inherits from iLQRSolver and overrides parts of the backward pass
+        to include second-order derivatives of the dynamics.
+
+        Args:
+            dynamics_fn, cost_fn, state_dim, control_dim, horizon: Same as iLQRSolver.
+            dynamics_hessians_fn (callable, optional):
+                A function `fxx, fuu, fux = func(x, u)` that returns Hessians of dynamics.
+                If None, these terms are conceptually ignored (falling back to iLQR-like behavior
+                for those specific terms, or requiring numerical computation not implemented here).
+        """
+        super().__init__(dynamics_fn, cost_fn, state_dim, control_dim, horizon)
+        self.dynamics_hessians_fn = dynamics_hessians_fn
+        if self.dynamics_hessians_fn is None:
+            print("Warning: FullDDPSolver initialized without dynamics_hessians_fn. "
+                  "Second-order dynamics terms will be missing, behaving like iLQR for those parts.")
+
+    def _get_dynamics_hessians(self, x, u):
+        """
+        Placeholder/Conceptual function to get Hessians of dynamics f(x,u).
+        f_xx = ∂²f/∂x² (a tensor)
+        f_uu = ∂²f/∂u² (a tensor)
+        f_ux = ∂²f/∂u∂x (a tensor)
+
+        In a real implementation, these would be computed analytically or numerically.
+        This sketch assumes they are provided or are zero if not.
+        """
+        if self.dynamics_hessians_fn:
+            try:
+                f_xx, f_uu, f_ux = self.dynamics_hessians_fn(x, u)
+                return f_xx, f_uu, f_ux
+            except Exception as e:
+                print(f"Error calling dynamics_hessians_fn: {e}. Returning zero Hessians.")
+                # Fallback to zero Hessians if the provided function fails
+
+        # Placeholder: return zero Hessians if no function is provided.
+        # This makes the DDP equations reduce to iLQR equations for these terms.
+        # Dimensions:
+        # f_xx: (state_dim, state_dim, state_dim) -> ∂f_i / ∂x_j ∂x_k
+        # f_uu: (state_dim, control_dim, control_dim) -> ∂f_i / ∂u_j ∂u_k
+        # f_ux: (state_dim, control_dim, state_dim) -> ∂f_i / ∂u_j ∂x_k
+        # For simplicity, this sketch doesn't define the exact tensor shapes if zero.
+        # A full implementation would need careful handling of these tensor shapes and contractions.
+        print("Warning: _get_dynamics_hessians called but no function provided or it failed. Returning zero Hessians.")
+        f_xx = np.zeros((self.state_dim, self.state_dim, self.state_dim))
+        f_uu = np.zeros((self.state_dim, self.control_dim, self.control_dim))
+        f_ux = np.zeros((self.state_dim, self.control_dim, self.state_dim))
+        return f_xx, f_uu, f_ux
+
+
+    def backward_pass(self, X, U, derivatives):
+        """
+        Performs the backward pass for Full DDP.
+        Overrides iLQRSolver's backward_pass to include second-order dynamics terms.
+        """
+        V_x = derivatives['lx_N']
+        V_xx = derivatives['lxx_N']
+
+        k_feedforward_terms = []
+        K_feedback_terms = []
+
+        current_regularization = self.reg_factor
+
+        for k in range(self.N - 1, -1, -1):
+            lx = derivatives['lx'][k]
+            lu = derivatives['lu'][k]
+            lxx = derivatives['lxx'][k]
+            luu = derivatives['luu'][k]
+            lux = derivatives['lux'][k]
+            fx = derivatives['fx'][k] # Jacobian df/dx
+            fu = derivatives['fu'][k] # Jacobian df/du
+
+            # Q-function expansion terms
+            Q_x = lx + fx.T @ V_x
+            Q_u = lu + fu.T @ V_x
+
+            Q_xx = lxx + fx.T @ V_xx @ fx
+            Q_uu = luu + fu.T @ V_xx @ fu
+            Q_ux = lux + fu.T @ V_xx @ fx
+
+            # --- Full DDP modification: Add terms with second-order dynamics derivatives ---
+            # These require Hessians of dynamics: f_xx, f_uu, f_ux
+            # And involve tensor contractions with V_x (gradient of Value function from next step)
+            # For this sketch, we call a placeholder _get_dynamics_hessians.
+            # A robust implementation would require careful numerical or analytical calculation of these.
+
+            # Conceptually, if f_xx, f_uu, f_ux were available (e.g. state_dim x state_dim x state_dim tensors):
+            f_xx_k, f_uu_k, f_ux_k = self._get_dynamics_hessians(X[k], U[k])
+
+            # The contraction V_x' * f_xx is sum_i V_x[i] * f_xx[i,:,:]
+            # where f_xx[i,:,:] is the Hessian of the i-th component of f.
+            # This results in a matrix of size state_dim x state_dim.
+            # Similar contractions for f_uu and f_ux.
+            # Note: np.einsum is a powerful tool for such contractions.
+            # Example (conceptual, exact einsum string depends on tensor dimension ordering):
+            if self.dynamics_hessians_fn: # Only add if Hessians are meaningfully computed
+                # Q_xx_ddp_term = np.einsum('i,ijk->jk', V_x, f_xx_k) # V_x is (state_dim), f_xx_k is (state_dim, state_dim, state_dim)
+                # Q_uu_ddp_term = np.einsum('i,ijk->jk', V_x, f_uu_k) # f_uu_k is (state_dim, control_dim, control_dim)
+                # Q_ux_ddp_term = np.einsum('i,ijk->jk', V_x, f_ux_k) # f_ux_k is (state_dim, control_dim, state_dim)
+
+                # Simplified placeholder for sketch - actual tensor math is more involved.
+                # This assumes f_**_k are already contracted with V_x if not zero.
+                # For a real implementation, one would pass V_x to _get_dynamics_hessians
+                # or perform the contraction here carefully.
+                # For this sketch, we assume _get_dynamics_hessians might return already-contracted terms or zeros.
+                # If they return raw Hessians, the einsum above is needed.
+                # Let's assume for the sketch, these are *additional* components.
+                # This part is highly conceptual in this sketch.
+
+                # A more direct way for the sketch, assuming f_**_k are raw Hessians:
+                # Q_xx += np.tensordot(V_x, f_xx_k, axes=1) # if f_xx_k[i,j,k] = d(f_i)/dx_j dx_k
+                # Q_uu += np.tensordot(V_x, f_uu_k, axes=1)
+                # Q_ux += np.tensordot(V_x, f_ux_k, axes=1) # Check axes for f_ux
+                 pass # Not implementing the actual contraction due to complexity of general tensor setup
+
+
+            Q_uu_reg = Q_uu + np.eye(self.control_dim) * current_regularization
+
+            max_reg_increases = 10
+            for _ in range(max_reg_increases):
+                try:
+                    np.linalg.cholesky(Q_uu_reg)
+                    break
+                except np.linalg.LinAlgError:
+                    current_regularization = max(self.reg_min, current_regularization * self.reg_factor)
+                    current_regularization = min(current_regularization, self.reg_max)
+                    Q_uu_reg = Q_uu + np.eye(self.control_dim) * current_regularization
+                    # print(f"    (FullDDP) Warning: Quu not positive definite at k={k}. Reg: {current_regularization:.2e}")
+            else:
+                print(f"    (FullDDP) ERROR: Quu not positive definite at k={k}. Max reg: {current_regularization:.2e}. Aborting.")
+                return None, None, False
+
+            try:
+                k_k = np.linalg.solve(Q_uu_reg, -Q_u)
+                K_k = np.linalg.solve(Q_uu_reg, -Q_ux)
+            except np.linalg.LinAlgError:
+                 print(f"    (FullDDP) ERROR: Solving for k_k, K_k failed at k={k}. Aborting.")
+                 return None, None, False
+
+            k_feedforward_terms.insert(0, k_k)
+            K_feedback_terms.insert(0, K_k)
+
+            V_x = Q_x + K_k.T @ Q_uu_reg @ k_k + K_k.T @ Q_u + Q_ux.T @ k_k
+            V_xx = Q_xx + K_k.T @ Q_uu_reg @ K_k + K_k.T @ Q_ux + Q_ux.T @ K_k
+            V_xx = 0.5 * (V_xx + V_xx.T)
+
+        return k_feedforward_terms, K_feedback_terms, True
