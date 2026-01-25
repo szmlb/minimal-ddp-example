@@ -185,8 +185,9 @@ def main():
     # --- 3. Define Cost Function for DDP ---
     # The DDP solver expects l(state, control, k, is_final, get_derivatives) -> cost, lx, lu, lxx, luu, lux.
     # We use a lambda to partially apply the `arm` instance to our `arm_cost_function`.
-    cost_fn_for_ddp = lambda state_x, control_u, k_step, is_final, compute_derivs: \
-                       arm_cost_function(arm, state_x, control_u, k_step, is_final, compute_derivs)
+    # Map solver's keyword arguments (is_final, get_derivatives) to arm_cost_function's (is_final_step, compute_derivatives)
+    cost_fn_for_ddp = lambda state_x, control_u, k_step, is_final, get_derivatives: \
+                       arm_cost_function(arm, state_x, control_u, k_step, is_final_step=is_final, compute_derivatives=get_derivatives)
 
 
     # --- 4. Initialize iLQR Solver ---
@@ -429,14 +430,14 @@ def generate_naive_trajectory(arm, initial_state_arm, target_angles_naive_rad, h
     naive_total_cost = 0.0
     for k in range(horizon):
         cost_k, _, _, _, _, _ = cost_fn_for_comparison(
-            X_naive_sim[k,:], U_naive_sim[k,:], k, is_final_step=False, compute_derivatives=False
+            X_naive_sim[k,:], U_naive_sim[k,:], k, is_final=False, get_derivatives=False
         )
         naive_total_cost += cost_k
 
     # Add terminal cost for the final state reached by the naive trajectory
     # Pass a dummy zero control as it's not used in terminal cost calculation.
     cost_final, _, _, _, _, _ = cost_fn_for_comparison(
-        X_naive_sim[horizon,:], np.zeros(arm.control_dim), horizon, is_final_step=True, compute_derivatives=False
+        X_naive_sim[horizon,:], np.zeros(arm.control_dim), horizon, is_final=True, get_derivatives=False
     )
     naive_total_cost += cost_final
 

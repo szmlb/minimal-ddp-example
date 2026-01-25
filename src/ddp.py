@@ -306,7 +306,6 @@ class iLQRSolver: # Renamed class DDP to iLQRSolver
 
     def run(self, x0, U_initial_guess, max_iters=100, tol=1e-4):
         """
-        """
         Run the main iLQR algorithm loop.
 
         Args:
@@ -583,9 +582,9 @@ class FullDDPSolver(iLQRSolver):
     def _get_dynamics_hessians(self, x, u):
         """
         Placeholder/Conceptual function to get Hessians of dynamics f(x,u).
-        f_xx = ∂²f/∂x² (a tensor)
-        f_uu = ∂²f/∂u² (a tensor)
-        f_ux = ∂²f/∂u∂x (a tensor)
+        f_xx = d2f_dx2 (a tensor)
+        f_uu = d2f_du2 (a tensor)
+        f_ux = d2f_dudx (a tensor)
 
         In a real implementation, these would be computed analytically or numerically.
         This sketch assumes they are provided or are zero if not.
